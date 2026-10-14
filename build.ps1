@@ -10,8 +10,15 @@ if (-not $iscc) { throw 'Inno Setup 6 (ISCC.exe) 을 찾을 수 없습니다.' }
 if (Test-Path $dist) { Remove-Item $dist -Recurse -Force }
 New-Item -ItemType Directory (Join-Path $dist 'build') | Out-Null
 
-& $csc /nologo /target:winexe /codepage:65001 /optimize+ /out:"$dist\build\FtpDrive.exe" `
-    /r:System.Windows.Forms.dll /r:System.Drawing.dll "$root\src\FtpDrive.cs"
+$refs = '/r:System.Windows.Forms.dll', '/r:System.Drawing.dll'
+
+# 설정 로직 테스트를 먼저 돌리고, 실패하면 빌드를 멈춘다.
+& $csc /nologo /target:exe /codepage:65001 /main:FtpDrive.Tests /out:"$dist\build\Tests.exe" @refs "$root\src\FtpDrive.cs" "$root\tests\Tests.cs"
+if ($LASTEXITCODE -ne 0) { throw "테스트 컴파일 실패 (종료 코드 $LASTEXITCODE)" }
+& "$dist\build\Tests.exe"
+if ($LASTEXITCODE -ne 0) { throw '테스트 실패' }
+
+& $csc /nologo /target:winexe /codepage:65001 /optimize+ /out:"$dist\build\FtpDrive.exe" @refs "$root\src\FtpDrive.cs"
 if ($LASTEXITCODE -ne 0) { throw "컴파일 실패 (종료 코드 $LASTEXITCODE)" }
 
 & $iscc /Q "$root\installer\FtpDrive.iss"

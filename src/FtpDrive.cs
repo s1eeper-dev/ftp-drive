@@ -45,54 +45,104 @@ namespace FtpDrive
         }
     }
 
-    class Settings
+    class Profile
     {
+        public string Alias = "";
         public string Protocol = "ftp";
         public string Host = "";
         public int Port = 21;
         public string User = "";
         public string RemotePath = "";
         public string Drive = "Z";
-        public string Label = "FTP";
+
+        // 별칭은 설정 파일 구역 이름과 탐색기 드라이브 이름으로 쓰이므로 문제 되는 문자를 뺀다.
+        public static string CleanAlias(string alias)
+        {
+            alias = Regex.Replace(alias ?? "", @"[\[\]\\/:*?""<>|]", "").Trim();
+            return alias.Length > 40 ? alias.Substring(0, 40).Trim() : alias;
+        }
+    }
+
+    class Settings
+    {
+        public readonly List<Profile> Profiles = new List<Profile>(); // 최근에 연결한 것이 맨 앞
         public bool OpenAfterConnect = true;
 
-        static string FilePath { get { return Path.Combine(MainForm.DataDir, "settings.ini"); } }
+        public static string DefaultPath { get { return Path.Combine(MainForm.DataDir, "settings.ini"); } }
 
-        public static Settings Load()
+        public Profile Find(string alias)
+        {
+            return Profiles.Find(p => string.Equals(p.Alias, alias, StringComparison.OrdinalIgnoreCase));
+        }
+
+        public static Settings Load() { return Load(DefaultPath); }
+
+        public static Settings Load(string path)
         {
             var s = new Settings();
-            if (!File.Exists(FilePath)) return s;
+            if (!File.Exists(path)) return s;
+            Profile cur = null, legacy = new Profile();
+            string legacyLabel = "";
             int port;
-            foreach (var line in File.ReadAllLines(FilePath, Encoding.UTF8))
+            foreach (var raw in File.ReadAllLines(path, Encoding.UTF8))
             {
+                string line = raw.Trim();
+                if (line.StartsWith("[") && line.EndsWith("]"))
+                {
+                    string section = line.Substring(1, line.Length - 2);
+                    cur = null;
+                    if (section.StartsWith("Profile:") && s.Find(section.Substring(8)) == null)
+                    {
+                        cur = new Profile { Alias = section.Substring(8) };
+                        s.Profiles.Add(cur);
+                    }
+                    continue;
+                }
                 int i = line.IndexOf('=');
                 if (i <= 0) continue;
                 string k = line.Substring(0, i).Trim(), v = line.Substring(i + 1).Trim();
+                if (k == "OpenAfterConnect") { s.OpenAfterConnect = v != "0"; continue; }
+                var p = cur ?? legacy; // 1.0.0 형식(구역 없이 서버 하나)은 연결 목록의 첫 항목으로 옮긴다.
                 switch (k)
                 {
-                    case "Protocol": s.Protocol = v; break;
-                    case "Host": s.Host = v; break;
-                    case "Port": if (int.TryParse(v, out port)) s.Port = port; break;
-                    case "User": s.User = v; break;
-                    case "RemotePath": s.RemotePath = v; break;
-                    case "Drive": if (v.Length > 0) s.Drive = v.Substring(0, 1); break;
-                    case "Label": s.Label = v; break;
-                    case "OpenAfterConnect": s.OpenAfterConnect = v != "0"; break;
+                    case "Protocol": p.Protocol = v; break;
+                    case "Host": p.Host = v; break;
+                    case "Port": if (int.TryParse(v, out port)) p.Port = port; break;
+                    case "User": p.User = v; break;
+                    case "RemotePath": p.RemotePath = v; break;
+                    case "Drive": if (v.Length > 0) p.Drive = v.Substring(0, 1); break;
+                    case "Label": legacyLabel = v; break;
                 }
+            }
+            if (s.Profiles.Count == 0 && legacy.Host.Length > 0)
+            {
+                legacy.Alias = Profile.CleanAlias(legacyLabel == "FTP" ? "" : legacyLabel);
+                if (legacy.Alias.Length == 0) legacy.Alias = Profile.CleanAlias(legacy.Host);
+                s.Profiles.Add(legacy);
             }
             return s;
         }
 
-        public void Save()
+        public void Save() { Save(DefaultPath); }
+
+        public void Save(string path)
         {
+            var lines = new List<string> { "[General]", "OpenAfterConnect=" + (OpenAfterConnect ? "1" : "0") };
+            foreach (var p in Profiles)
+            {
+                lines.Add("");
+                lines.Add("[Profile:" + p.Alias + "]");
+                lines.Add("Protocol=" + p.Protocol);
+                lines.Add("Host=" + p.Host);
+                lines.Add("Port=" + p.Port);
+                lines.Add("User=" + p.User);
+                lines.Add("RemotePath=" + p.RemotePath);
+                lines.Add("Drive=" + p.Drive);
+            }
             try
             {
-                Directory.CreateDirectory(MainForm.DataDir);
-                File.WriteAllLines(FilePath, new[] {
-                    "Protocol=" + Protocol, "Host=" + Host, "Port=" + Port, "User=" + User,
-                    "RemotePath=" + RemotePath, "Drive=" + Drive, "Label=" + Label,
-                    "OpenAfterConnect=" + (OpenAfterConnect ? "1" : "0")
-                }, Encoding.UTF8);
+                Directory.CreateDirectory(Path.GetDirectoryName(path));
+                File.WriteAllLines(path, lines, Encoding.UTF8);
             }
             catch { } // 저장에 실패해도 연결 자체는 계속 가능하다.
         }
@@ -117,6 +167,10 @@ namespace FtpDrive
         [DllImport("shell32.dll", CharSet = CharSet.Unicode)]
         static extern int ExtractIconEx(string file, int index, out IntPtr large, out IntPtr small, int count);
 
+        readonly ComboBox cboProfiles = new ComboBox();
+        readonly Button btnNew = new Button();
+        readonly Button btnDelete = new Button();
+        readonly TextBox txtAlias = new TextBox();
         readonly ComboBox cboProtocol = new ComboBox();
         readonly TextBox txtHost = new TextBox();
         readonly NumericUpDown numPort = new NumericUpDown();
@@ -124,7 +178,6 @@ namespace FtpDrive
         readonly TextBox txtPass = new TextBox();
         readonly TextBox txtPath = new TextBox();
         readonly ComboBox cboDrive = new ComboBox();
-        readonly TextBox txtLabel = new TextBox();
         readonly CheckBox chkOpen = new CheckBox();
         readonly Button btnConnect = new Button();
         readonly Button btnDisconnect = new Button();
@@ -133,9 +186,12 @@ namespace FtpDrive
         readonly System.Windows.Forms.Timer waitTimer = new System.Windows.Forms.Timer();
         readonly Queue<string> logLines = new Queue<string>();
 
+        readonly Settings settings = Settings.Load();
+        Profile selected;          // 목록에서 고른 연결. [새 연결]을 누르면 null 이다.
+        bool fillingProfiles;      // 목록을 다시 채우는 동안 선택 변경 이벤트를 무시한다.
         State state = State.Disconnected;
         Process rclone;
-        string mountedDrive, mountedHost, rcAddr, rcPass;
+        string mountedDrive, mountedAlias, rcAddr, rcPass;
         DateTime connectStart;
 
         public MainForm()
@@ -155,6 +211,22 @@ namespace FtpDrive
             int pad = Em(0.8), field = Em(16);
             var grid = new TableLayoutPanel { ColumnCount = 2, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, Location = new Point(pad, pad), Margin = new Padding(0, 0, pad, pad) };
 
+            cboProfiles.DropDownStyle = ComboBoxStyle.DropDownList;
+            cboProfiles.Margin = Padding.Empty;
+            btnNew.Text = "새 연결";
+            btnDelete.Text = "삭제";
+            var profileRow = new FlowLayoutPanel { AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, WrapContents = false, Margin = new Padding(0, 3, 0, 3) };
+            profileRow.Controls.Add(cboProfiles);
+            foreach (var b in new[] { btnNew, btnDelete })
+            {
+                b.AutoSize = true;
+                b.AutoSizeMode = AutoSizeMode.GrowAndShrink;
+                b.Margin = new Padding(Em(0.2), 0, 0, 0);
+                profileRow.Controls.Add(b);
+            }
+            txtAlias.Width = field;
+            SetCue(txtAlias, "예: 회사 NAS (탐색기에 보일 이름)");
+
             cboProtocol.DropDownStyle = ComboBoxStyle.DropDownList;
             cboProtocol.Items.AddRange(ProtoNames);
             cboProtocol.Width = field;
@@ -164,12 +236,12 @@ namespace FtpDrive
             txtPass.Width = field; txtPass.UseSystemPasswordChar = true;
             txtPath.Width = field;
             cboDrive.DropDownStyle = ComboBoxStyle.DropDownList; cboDrive.Width = Em(6);
-            txtLabel.Width = field;
             chkOpen.Text = "연결되면 탐색기로 열기"; chkOpen.AutoSize = true;
             SetCue(txtHost, "예: 192.168.0.10 또는 ftp.example.com");
             SetCue(txtPath, "비우면 로그인 기본 폴더");
-            SetCue(txtLabel, "탐색기에 보일 이름");
 
+            AddRow(grid, "연결 목록", profileRow);
+            AddRow(grid, "별칭", txtAlias);
             AddRow(grid, "방식", cboProtocol);
             AddRow(grid, "서버 주소", txtHost);
             AddRow(grid, "포트", numPort);
@@ -177,7 +249,6 @@ namespace FtpDrive
             AddRow(grid, "비밀번호", txtPass);
             AddRow(grid, "원격 폴더", txtPath);
             AddRow(grid, "드라이브", cboDrive);
-            AddRow(grid, "표시 이름", txtLabel);
             AddRow(grid, "", chkOpen);
 
             var buttons = new FlowLayoutPanel { AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, Anchor = AnchorStyles.None, Margin = new Padding(0, Em(0.6), 0, 0) };
@@ -204,7 +275,12 @@ namespace FtpDrive
 
             Controls.Add(grid);
             AcceptButton = btnConnect;
+            // 목록 줄 전체 너비를 아래 입력 칸과 맞춘다. 버튼 글꼴이 정해지도록 폼에 붙인 뒤 계산한다.
+            cboProfiles.Width = field - btnNew.PreferredSize.Width - btnNew.Margin.Left - btnDelete.PreferredSize.Width - btnDelete.Margin.Left;
 
+            cboProfiles.SelectedIndexChanged += delegate { OnProfileSelected(); };
+            btnNew.Click += delegate { NewProfile(); };
+            btnDelete.Click += delegate { DeleteProfile(); };
             cboProtocol.SelectedIndexChanged += delegate { OnProtocolChanged(); };
             cboDrive.DropDown += delegate { FillDrives(SelectedLetter()); };
             btnConnect.Click += delegate { Connect(); };
@@ -213,16 +289,8 @@ namespace FtpDrive
             waitTimer.Interval = 500;
             waitTimer.Tick += delegate { OnWaitTick(); };
 
-            var s = Settings.Load();
-            int pi = Array.IndexOf(ProtoKeys, s.Protocol);
-            cboProtocol.SelectedIndex = pi < 0 ? 0 : pi;
-            numPort.Value = Math.Max(1, Math.Min(65535, s.Port));
-            txtHost.Text = s.Host;
-            txtUser.Text = s.User;
-            txtPath.Text = s.RemotePath;
-            txtLabel.Text = s.Label;
-            chkOpen.Checked = s.OpenAfterConnect;
-            FillDrives(s.Drive);
+            chkOpen.Checked = settings.OpenAfterConnect;
+            FillProfiles(settings.Profiles.Count > 0 ? settings.Profiles[0] : null);
             SetState(State.Disconnected);
         }
 
@@ -244,8 +312,87 @@ namespace FtpDrive
         protected override void OnShown(EventArgs e)
         {
             base.OnShown(e);
-            if (txtHost.Text.Length > 0 && txtUser.Text.Length > 0) txtPass.Focus();
-            else txtHost.Focus();
+            if (selected != null) txtPass.Focus();
+            else txtAlias.Focus();
+        }
+
+        // 목록을 다시 채우고 sel 을 고른다. sel 이 null 이면 빈 새 연결 입력 상태로 둔다.
+        void FillProfiles(Profile sel)
+        {
+            fillingProfiles = true;
+            cboProfiles.Items.Clear();
+            foreach (var p in settings.Profiles) cboProfiles.Items.Add(p.Alias);
+            cboProfiles.SelectedIndex = sel == null ? -1 : settings.Profiles.IndexOf(sel);
+            fillingProfiles = false;
+            ShowProfile(sel);
+        }
+
+        void ShowProfile(Profile p)
+        {
+            selected = p;
+            if (p == null) p = new Profile { Drive = FirstFreeLetter() };
+            txtAlias.Text = p.Alias;
+            int pi = Array.IndexOf(ProtoKeys, p.Protocol);
+            cboProtocol.SelectedIndex = pi < 0 ? 0 : pi;
+            numPort.Value = Math.Max(1, Math.Min(65535, p.Port));
+            txtHost.Text = p.Host;
+            txtUser.Text = p.User;
+            txtPass.Clear();
+            txtPath.Text = p.RemotePath;
+            FillDrives(p.Drive);
+            btnDelete.Enabled = state == State.Disconnected && selected != null;
+        }
+
+        void OnProfileSelected()
+        {
+            if (fillingProfiles || cboProfiles.SelectedIndex < 0) return;
+            ShowProfile(settings.Profiles[cboProfiles.SelectedIndex]);
+            txtPass.Focus();
+        }
+
+        void NewProfile()
+        {
+            FillProfiles(null);
+            txtAlias.Focus();
+        }
+
+        void DeleteProfile()
+        {
+            if (selected == null) return;
+            if (MessageBox.Show(this, "'" + selected.Alias + "' 연결을 목록에서 지울까요?", Text,
+                    MessageBoxButtons.YesNo, MessageBoxIcon.Question, MessageBoxDefaultButton.Button2) != DialogResult.Yes)
+                return;
+            settings.Profiles.Remove(selected);
+            settings.Save();
+            FillProfiles(settings.Profiles.Count > 0 ? settings.Profiles[0] : null);
+        }
+
+        // 입력한 내용을 연결 목록에 저장하고 맨 앞으로 올린다. 같은 별칭이 따로 있으면 덮어쓸지 묻는다.
+        Profile SaveCurrentProfile(string host, string user, string letter)
+        {
+            string alias = Profile.CleanAlias(txtAlias.Text);
+            if (alias.Length == 0) alias = Profile.CleanAlias(host);
+            var same = settings.Find(alias);
+            if (same != null && same != selected)
+            {
+                if (MessageBox.Show(this, "'" + alias + "' 별칭이 이미 목록에 있습니다. 덮어쓸까요?", Text,
+                        MessageBoxButtons.YesNo, MessageBoxIcon.Question, MessageBoxDefaultButton.Button2) != DialogResult.Yes)
+                    return null;
+                settings.Profiles.Remove(same);
+            }
+            if (selected != null) settings.Profiles.Remove(selected);
+            var p = new Profile
+            {
+                Alias = alias, Protocol = ProtoKeys[cboProtocol.SelectedIndex], Host = host, Port = (int)numPort.Value,
+                User = user, RemotePath = txtPath.Text.Trim().Replace('\\', '/'), Drive = letter
+            };
+            settings.Profiles.Insert(0, p);
+            settings.OpenAfterConnect = chkOpen.Checked;
+            settings.Save();
+            string pass = txtPass.Text;
+            FillProfiles(p);   // 목록 표시를 갱신하면서 비밀번호 칸이 비워지므로 되돌린다.
+            txtPass.Text = pass;
+            return p;
         }
 
         void OnProtocolChanged()
@@ -267,6 +414,14 @@ namespace FtpDrive
             cboDrive.SelectedItem = want;
         }
 
+        static string FirstFreeLetter()
+        {
+            var used = Environment.GetLogicalDrives();
+            for (char c = 'Z'; c >= 'D'; c--)
+                if (!Array.Exists(used, d => char.ToUpperInvariant(d[0]) == c)) return c.ToString();
+            return "Z";
+        }
+
         string SelectedLetter()
         {
             var item = cboDrive.SelectedItem as string;
@@ -277,8 +432,9 @@ namespace FtpDrive
         {
             state = s;
             bool idle = s == State.Disconnected;
-            foreach (Control c in new Control[] { cboProtocol, txtHost, numPort, txtUser, txtPass, txtPath, cboDrive, txtLabel })
+            foreach (Control c in new Control[] { cboProfiles, btnNew, txtAlias, cboProtocol, txtHost, numPort, txtUser, txtPass, txtPath, cboDrive })
                 c.Enabled = idle;
+            btnDelete.Enabled = idle && selected != null;
             btnConnect.Enabled = idle;
             btnDisconnect.Enabled = !idle;
             btnOpen.Enabled = s == State.Connected;
@@ -295,9 +451,9 @@ namespace FtpDrive
                     Text = "FTP 드라이브 - 연결 중";
                     break;
                 case State.Connected:
-                    lblStatus.Text = "연결됨  " + mountedDrive + ":  ←  " + mountedHost;
+                    lblStatus.Text = "연결됨  " + mountedAlias + " (" + mountedDrive + ":)";
                     lblStatus.ForeColor = Color.ForestGreen;
-                    Text = "FTP 드라이브 - " + mountedDrive + ": 연결됨";
+                    Text = "FTP 드라이브 - " + mountedAlias + " (" + mountedDrive + ":)";
                     break;
             }
         }
@@ -307,21 +463,15 @@ namespace FtpDrive
             string host = txtHost.Text.Trim(), user = txtUser.Text.Trim(), letter = SelectedLetter();
             if (host.Length == 0) { Warn("서버 주소를 입력하세요."); txtHost.Focus(); return; }
             if (user.Length == 0) { Warn("아이디를 입력하세요."); txtUser.Focus(); return; }
+            var profile = SaveCurrentProfile(host, user, letter); // 연결에 실패해도 입력한 정보는 목록에 남긴다.
+            if (profile == null) return;
             string exe = FindRclone();
             if (exe == null) { Warn("rclone.exe 를 찾을 수 없습니다.\n\n설치 프로그램(FtpDrive-Setup.exe)을 다시 실행하세요."); return; }
             if (!WinFspInstalled()) { Warn("WinFsp 가 설치되어 있지 않습니다.\n\n설치 프로그램(FtpDrive-Setup.exe)을 다시 실행하세요."); return; }
             if (Array.Exists(Environment.GetLogicalDrives(), d => d.StartsWith(letter + ":", StringComparison.OrdinalIgnoreCase)))
             { Warn(letter + ": 드라이브는 이미 사용 중입니다. 다른 드라이브를 고르세요."); return; }
 
-            string proto = ProtoKeys[cboProtocol.SelectedIndex];
-            string remotePath = txtPath.Text.Trim().Replace('\\', '/');
-            string label = Regex.Replace(txtLabel.Text, @"[\\/:*?""<>|]", "").Trim();
-            if (label.Length == 0) label = "FTP";
-            new Settings
-            {
-                Protocol = proto, Host = host, Port = (int)numPort.Value, User = user, RemotePath = remotePath,
-                Drive = letter, Label = label, OpenAfterConnect = chkOpen.Checked
-            }.Save();
+            string proto = profile.Protocol, remotePath = profile.RemotePath;
 
             string obscured = "";
             if (txtPass.Text.Length > 0)
@@ -332,7 +482,7 @@ namespace FtpDrive
 
             rcAddr = "127.0.0.1:" + FreePort();
             rcPass = Guid.NewGuid().ToString("N");
-            string volname = @"\\" + Regex.Replace(host, @"[^A-Za-z0-9.\-_]", "-") + @"\" + label;
+            string volname = @"\\" + Regex.Replace(host, @"[^A-Za-z0-9.\-_]", "-") + @"\" + profile.Alias;
             string args = string.Join(" ", new[] {
                 "mount", Quote((proto == "sftp" ? ":sftp:" : ":ftp:") + remotePath), letter + ":",
                 "--vfs-cache-mode", "writes",
@@ -382,7 +532,7 @@ namespace FtpDrive
 
             rclone = p;
             mountedDrive = letter;
-            mountedHost = host;
+            mountedAlias = profile.Alias;
             connectStart = DateTime.Now;
             SetState(State.Connecting);
             waitTimer.Start();
