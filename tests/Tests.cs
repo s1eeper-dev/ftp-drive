@@ -1,4 +1,4 @@
-// FtpDrive 의 설정 저장·불러오기 로직을 확인하는 콘솔 테스트 (build.ps1 -Test 로 실행).
+// FtpDrive 의 설정 저장·불러오기와 업로드 상황 해석을 확인하는 콘솔 테스트 (build.ps1 이 빌드 전에 실행).
 using System;
 using System.IO;
 using System.Text;
@@ -55,6 +55,19 @@ namespace FtpDrive
 
             Check(Profile.CleanAlias(" [회사]/NAS:*?\"<>|\\ ") == "회사NAS", "별칭에서 쓸 수 없는 문자를 뺀다");
             Check(Profile.CleanAlias(new string('가', 50)).Length == 40, "별칭은 40자까지만 쓴다");
+
+            // rclone 원격 제어 응답에서 업로드 상황을 읽는다.
+            const string vfsBusy = "{\"diskCache\":{\"bytesUsed\":1048576,\"erroredFiles\":0,\"files\":3,\"outOfSpace\":false,\"uploadsInProgress\":1,\"uploadsQueued\":2},\"fs\":\":ftp:\",\"inUse\":1}";
+            const string vfsIdle = "{\"diskCache\":{\"uploadsInProgress\":0,\"uploadsQueued\":0},\"inUse\":1}";
+            const string coreStats = "{\"bytes\":512,\"transfers\":0,\"transferring\":[{\"bytes\":512,\"name\":\"사진/2026/IMG_0001.jpg\",\"percentage\":45,\"size\":1024,\"speed\":100}]}";
+            var u = UploadInfo.Parse(vfsBusy, coreStats);
+            Check(u != null && u.Pending == 3, "올리는 중 1개 + 대기 2개 = 남은 파일 3개");
+            Check(u != null && u.Name == "IMG_0001.jpg" && u.Percent == 45, "지금 올리는 파일 이름(폴더 제외)과 진행률을 읽는다");
+            u = UploadInfo.Parse(vfsBusy, "{\"bytes\":0}");
+            Check(u != null && u.Pending == 3 && u.Name == null, "대기만 있고 전송 목록이 없을 때");
+            u = UploadInfo.Parse(vfsIdle, null);
+            Check(u != null && u.Pending == 0, "업로드가 없으면 0개");
+            Check(UploadInfo.Parse("not json", null) == null, "JSON 이 아니면 null");
 
             Console.WriteLine(failed == 0 ? "모두 통과" : failed + "개 실패");
             return failed == 0 ? 0 : 1;

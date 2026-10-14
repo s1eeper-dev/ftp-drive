@@ -1,5 +1,6 @@
 // FTP/SFTP 서버를 드라이브 문자로 연결·해제하는 작은 창 프로그램 (rclone mount + WinFsp 사용).
 using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
@@ -11,6 +12,7 @@ using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading;
+using System.Web.Script.Serialization;
 using System.Windows.Forms;
 using Microsoft.Win32;
 
@@ -60,6 +62,50 @@ namespace FtpDrive
         {
             alias = Regex.Replace(alias ?? "", @"[\[\]\\/:*?""<>|]", "").Trim();
             return alias.Length > 40 ? alias.Substring(0, 40).Trim() : alias;
+        }
+    }
+
+    // rclone 원격 제어 응답(vfs/stats, core/stats)에서 업로드 진행 상황만 뽑는다.
+    class UploadInfo
+    {
+        public int Pending;       // 올리는 중이거나 올릴 차례를 기다리는 파일 수
+        public string Name;       // 지금 올리고 있는 파일 이름, 없으면 null
+        public int Percent = -1;
+
+        public static UploadInfo Parse(string vfsJson, string statsJson)
+        {
+            try
+            {
+                var js = new JavaScriptSerializer();
+                var vfs = js.DeserializeObject(vfsJson) as Dictionary<string, object>;
+                if (vfs == null) return null;
+                var info = new UploadInfo();
+                var disk = Get(vfs, "diskCache") as Dictionary<string, object>;
+                if (disk != null) info.Pending = ToInt(Get(disk, "uploadsInProgress")) + ToInt(Get(disk, "uploadsQueued"));
+                var stats = statsJson == null ? null : js.DeserializeObject(statsJson) as Dictionary<string, object>;
+                var list = stats == null ? null : Get(stats, "transferring") as IList;
+                var first = list != null && list.Count > 0 ? list[0] as Dictionary<string, object> : null;
+                if (first != null)
+                {
+                    var name = Get(first, "name") as string;
+                    if (name != null) info.Name = name.Substring(name.LastIndexOf('/') + 1);
+                    info.Percent = ToInt(Get(first, "percentage"));
+                }
+                return info;
+            }
+            catch (ArgumentException) { return null; } // JSON 형식이 아닐 때
+        }
+
+        static object Get(Dictionary<string, object> d, string key)
+        {
+            object v;
+            return d.TryGetValue(key, out v) ? v : null;
+        }
+
+        static int ToInt(object v)
+        {
+            try { return v == null ? 0 : Convert.ToInt32(v); }
+            catch (Exception) { return 0; }
         }
     }
 
@@ -183,12 +229,16 @@ namespace FtpDrive
         readonly Button btnDisconnect = new Button();
         readonly Button btnOpen = new Button();
         readonly Label lblStatus = new Label();
-        readonly System.Windows.Forms.Timer waitTimer = new System.Windows.Forms.Timer();
+        readonly System.Windows.Forms.Timer waitTimer = new System.Windows.Forms.Timer();   // 연결될 때까지 확인
+        readonly System.Windows.Forms.Timer statsTimer = new System.Windows.Forms.Timer();  // 연결 중 업로드 상황 확인
         readonly Queue<string> logLines = new Queue<string>();
 
         readonly Settings settings = Settings.Load();
         Profile selected;          // 목록에서 고른 연결. [새 연결]을 누르면 null 이다.
         bool fillingProfiles;      // 목록을 다시 채우는 동안 선택 변경 이벤트를 무시한다.
+        bool disconnectWhenIdle;   // 업로드가 끝나면 자동으로 해제한다.
+        bool closeWhenIdle;        // 자동 해제 뒤 창도 닫는다.
+        bool asking;               // 확인 창을 띄운 동안에는 자동 해제를 미룬다.
         State state = State.Disconnected;
         Process rclone;
         string mountedDrive, mountedAlias, rcAddr, rcPass;
@@ -265,8 +315,11 @@ namespace FtpDrive
             grid.SetColumnSpan(buttons, 2);
             grid.RowCount++;
 
-            lblStatus.AutoSize = true;
-            lblStatus.MaximumSize = new Size(Em(22), 0);
+            // 업로드 중에는 두 줄을 쓰므로 높이를 고정해 창 크기가 들썩이지 않게 한다.
+            lblStatus.AutoSize = false;
+            lblStatus.Size = new Size(Em(21), Em(2.4));
+            lblStatus.TextAlign = ContentAlignment.MiddleCenter;
+            lblStatus.AutoEllipsis = true;
             lblStatus.Anchor = AnchorStyles.None;
             lblStatus.Margin = new Padding(0, Em(0.4), 0, 0);
             grid.Controls.Add(lblStatus, 0, grid.RowCount);
@@ -288,6 +341,8 @@ namespace FtpDrive
             btnOpen.Click += delegate { OpenDrive(); };
             waitTimer.Interval = 500;
             waitTimer.Tick += delegate { OnWaitTick(); };
+            statsTimer.Interval = 1000;
+            statsTimer.Tick += delegate { OnStatsTick(); };
 
             chkOpen.Checked = settings.OpenAfterConnect;
             FillProfiles(settings.Profiles.Count > 0 ? settings.Profiles[0] : null);
@@ -441,6 +496,8 @@ namespace FtpDrive
             switch (s)
             {
                 case State.Disconnected:
+                    statsTimer.Stop();
+                    disconnectWhenIdle = closeWhenIdle = false;
                     lblStatus.Text = "연결 안 됨";
                     lblStatus.ForeColor = SystemColors.GrayText;
                     Text = "FTP 드라이브";
@@ -451,10 +508,47 @@ namespace FtpDrive
                     Text = "FTP 드라이브 - 연결 중";
                     break;
                 case State.Connected:
-                    lblStatus.Text = "연결됨  " + mountedAlias + " (" + mountedDrive + ":)";
-                    lblStatus.ForeColor = Color.ForestGreen;
-                    Text = "FTP 드라이브 - " + mountedAlias + " (" + mountedDrive + ":)";
+                    ShowConnected(null);
+                    statsTimer.Start();
                     break;
+            }
+        }
+
+        void ShowConnected(UploadInfo u)
+        {
+            string head = mountedAlias + " (" + mountedDrive + ":)";
+            Text = "FTP 드라이브 - " + head;
+            if (u == null || u.Pending == 0)
+            {
+                lblStatus.Text = "연결됨  " + head;
+                lblStatus.ForeColor = Color.ForestGreen;
+                return;
+            }
+            string current = u.Name == null ? "" : "\n" + u.Name + (u.Percent >= 0 ? "  " + u.Percent + "%" : "");
+            lblStatus.Text = (disconnectWhenIdle ? "업로드가 끝나면 해제합니다" : "서버로 업로드 중") + " · 남은 파일 " + u.Pending + "개" + current;
+            lblStatus.ForeColor = Color.DarkOrange;
+        }
+
+        UploadInfo GetUploadInfo(int timeoutMs)
+        {
+            string vfs = RcCall("vfs/stats", timeoutMs);
+            if (vfs == null) return null;
+            var u = UploadInfo.Parse(vfs, null);
+            if (u != null && u.Pending > 0) u = UploadInfo.Parse(vfs, RcCall("core/stats", timeoutMs));
+            return u;
+        }
+
+        void OnStatsTick()
+        {
+            if (state != State.Connected || asking) return;
+            var u = GetUploadInfo(1000);
+            if (u == null) return;
+            ShowConnected(u);
+            if (disconnectWhenIdle && u.Pending == 0)
+            {
+                bool close = closeWhenIdle;
+                Disconnect(false);
+                if (close) Close();
             }
         }
 
@@ -486,6 +580,7 @@ namespace FtpDrive
             string args = string.Join(" ", new[] {
                 "mount", Quote((proto == "sftp" ? ":sftp:" : ":ftp:") + remotePath), letter + ":",
                 "--vfs-cache-mode", "writes",
+                "--vfs-write-back", "1s",   // 파일을 닫고 1초 뒤 업로드 시작 (기본 5초)
                 "--dir-cache-time", "30s",
                 "--network-mode",
                 "--volname", Quote(volname),
@@ -574,25 +669,41 @@ namespace FtpDrive
             txtPass.Focus();
         }
 
-        bool Disconnect(bool checkUploads)
+        // 업로드가 남아 있고 askIfUploading 이면 어떻게 할지 묻는다. 지금 해제했으면 true 를 돌려준다.
+        bool Disconnect(bool askIfUploading)
         {
             var p = rclone;
             if (p == null) return true;
-            if (checkUploads && state == State.Connected)
+            if (askIfUploading && state == State.Connected)
             {
-                int n = PendingUploads();
-                if (n > 0 && MessageBox.Show(this,
-                        "아직 서버로 올리고 있는 파일이 " + n + "개 있습니다.\n지금 해제하면 이 파일들이 서버에 올라가지 않을 수 있습니다.\n\n그래도 해제할까요? ([아니요]를 누르고 잠시 뒤 다시 해제하세요.)",
-                        Text, MessageBoxButtons.YesNo, MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2) != DialogResult.Yes)
-                    return false;
+                var u = GetUploadInfo(3000);
+                if (u != null && u.Pending > 0)
+                {
+                    asking = true;
+                    var r = MessageBox.Show(this,
+                        "아직 서버로 올리는 중인 파일이 " + u.Pending + "개 있습니다.\n\n" +
+                        "[예]  업로드가 끝나면 자동으로 해제합니다.\n" +
+                        "[아니요]  지금 바로 해제합니다. 다 올라가지 못한 파일은 서버에 저장되지 않을 수 있습니다.\n" +
+                        "[취소]  해제하지 않고 계속 연결해 둡니다.",
+                        Text, MessageBoxButtons.YesNoCancel, MessageBoxIcon.Warning);
+                    asking = false;
+                    if (rclone != p) return true; // 묻는 사이에 연결이 이미 끊어졌다.
+                    disconnectWhenIdle = r == DialogResult.Yes;
+                    if (r != DialogResult.No)
+                    {
+                        ShowConnected(u);
+                        return false;
+                    }
+                }
             }
             rclone = null;
             waitTimer.Stop();
+            statsTimer.Stop();
             lblStatus.Text = "연결 해제 중...";
             lblStatus.Refresh();
             Cursor.Current = Cursors.WaitCursor;
             // rc 로 정상 종료를 요청하고, 응답이 없으면 강제로 끝낸다.
-            if (RcCall("core/quit") == null || !p.WaitForExit(15000)) Kill(p);
+            if (RcCall("core/quit", 5000) == null || !p.WaitForExit(15000)) Kill(p);
             Cursor.Current = Cursors.Default;
             SaveLog();
             SetState(State.Disconnected);
@@ -606,9 +717,12 @@ namespace FtpDrive
             {
                 if (e.CloseReason == CloseReason.UserClosing)
                 {
-                    if (MessageBox.Show(this, "연결을 해제하고 종료할까요?", Text, MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes
-                        || !Disconnect(true))
+                    asking = true;
+                    bool yes = MessageBox.Show(this, "연결을 해제하고 종료할까요?", Text, MessageBoxButtons.YesNo, MessageBoxIcon.Question) == DialogResult.Yes;
+                    asking = false;
+                    if (!yes || !Disconnect(true))
                     {
+                        closeWhenIdle = yes && disconnectWhenIdle; // [예]를 골랐으면 업로드가 끝난 뒤 창도 닫는다.
                         e.Cancel = true;
                         return;
                     }
@@ -623,24 +737,15 @@ namespace FtpDrive
             try { Process.Start("explorer.exe", mountedDrive + @":\"); } catch { }
         }
 
-        int PendingUploads()
-        {
-            string json = RcCall("vfs/stats");
-            if (json == null) return 0;
-            int n = 0;
-            foreach (Match m in Regex.Matches(json, "\"(uploadsInProgress|uploadsQueued)\"\\s*:\\s*(\\d+)"))
-                n += int.Parse(m.Groups[2].Value);
-            return n;
-        }
-
-        string RcCall(string path)
+        string RcCall(string path, int timeoutMs)
         {
             try
             {
                 var req = (HttpWebRequest)WebRequest.Create("http://" + rcAddr + "/" + path);
                 req.Method = "POST";
                 req.Proxy = null;
-                req.Timeout = 5000;
+                req.Timeout = timeoutMs;
+                req.ReadWriteTimeout = timeoutMs;
                 req.ContentType = "application/json";
                 req.Headers[HttpRequestHeader.Authorization] = "Basic " + Convert.ToBase64String(Encoding.ASCII.GetBytes(RcUser + ":" + rcPass));
                 byte[] body = Encoding.ASCII.GetBytes("{}");

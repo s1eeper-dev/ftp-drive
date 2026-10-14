@@ -10,7 +10,7 @@ if (-not $iscc) { throw 'Inno Setup 6 (ISCC.exe) 을 찾을 수 없습니다.' }
 if (Test-Path $dist) { Remove-Item $dist -Recurse -Force }
 New-Item -ItemType Directory (Join-Path $dist 'build') | Out-Null
 
-$refs = '/r:System.Windows.Forms.dll', '/r:System.Drawing.dll'
+$refs = '/r:System.Windows.Forms.dll', '/r:System.Drawing.dll', '/r:System.Web.Extensions.dll'
 
 # 설정 로직 테스트를 먼저 돌리고, 실패하면 빌드를 멈춘다.
 & $csc /nologo /target:exe /codepage:65001 /main:FtpDrive.Tests /out:"$dist\build\Tests.exe" @refs "$root\src\FtpDrive.cs" "$root\tests\Tests.cs"
