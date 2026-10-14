@@ -6,6 +6,7 @@ using System.Drawing;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Threading;
 using System.Windows.Forms;
 
 namespace FtpDrive
@@ -513,24 +514,52 @@ namespace FtpDrive
             foreach (var c in new List<Connection>(conns.Values))
             {
                 if (c.Mounted || Active(c.Profile) != c) continue;
-                if (Directory.Exists(c.Drive + @":\"))
-                {
-                    c.Mounted = true;
-                    if (c.Profile == selected) txtPass.Clear();
-                    RefreshView();
-                    if (chkOpen.Checked) OpenDrive(c.Drive);
-                }
-                else if ((DateTime.Now - c.Started).TotalSeconds > 30)
+                if ((DateTime.Now - c.Started).TotalSeconds > 30)
                 {
                     conns.Remove(c.Profile);
                     c.Kill();
                     c.SaveLog();
                     RefreshView();
                     ShowFailure(c, "30초 안에 연결되지 않았습니다.");
+                    continue;
                 }
-                else waiting = true;
+                waiting = true;
+                if (!c.Verifying && Directory.Exists(c.Drive + @":\")) Verify(c);
             }
             if (!waiting) waitTimer.Stop();
+        }
+
+        // 드라이브가 생겨도 로그인·인증서 문제는 파일 목록을 읽을 때에야 드러나므로(특히 WebDAV), 맨 위 목록을 한 번 읽어 본 뒤에 '연결됨'으로 둔다.
+        void Verify(Connection c)
+        {
+            c.Verifying = true;
+            string root = c.Drive + @":\";
+            ThreadPool.QueueUserWorkItem(delegate
+            {
+                string error = null;
+                try { Directory.GetFileSystemEntries(root); }
+                catch (Exception ex) { error = ex.Message; }
+                try { if (IsHandleCreated && !IsDisposed) BeginInvoke(new Action(() => OnVerified(c, error))); }
+                catch (InvalidOperationException) { } // 창이 이미 닫히는 중
+            });
+        }
+
+        void OnVerified(Connection c, string error)
+        {
+            if (Active(c.Profile) != c) return; // 그사이 해제했거나 시간이 지나 끝냈다.
+            c.Verifying = false;
+            if (error == null)
+            {
+                c.Mounted = true;
+                if (c.Profile == selected) txtPass.Clear();
+                RefreshView();
+                if (chkOpen.Checked) OpenDrive(c.Drive);
+                return;
+            }
+            conns.Remove(c.Profile);
+            c.Stop();
+            RefreshView();
+            ShowFailure(c, "드라이브는 만들었지만 서버의 파일 목록을 읽지 못해 연결을 끊었습니다.\n(" + error.Trim() + ")");
         }
 
         void OnStatsTick()

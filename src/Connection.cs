@@ -18,7 +18,8 @@ namespace FtpDrive
         public readonly Profile Profile;
         public readonly string Drive;       // 연결할 때 정한 드라이브 문자 (연결 중에는 바뀌지 않는다)
         public readonly DateTime Started = DateTime.Now;
-        public bool Mounted;                // 드라이브가 나타났으면 true, 그 전은 연결 중
+        public bool Mounted;                // 드라이브가 나타나고 파일 목록까지 읽었으면 true, 그 전은 연결 중
+        public bool Verifying;              // 드라이브가 나타나 파일 목록을 읽어 보는 중
         public bool DisconnectWhenIdle;     // 업로드가 끝나면 자동으로 해제
         public UploadInfo Upload;           // 마지막으로 확인한 업로드 상황
         public Process Process { get; private set; }
@@ -107,6 +108,7 @@ namespace FtpDrive
         public void Stop()
         {
             if (RcCall("core/quit", 5000) == null || !Process.WaitForExit(15000)) Kill();
+            try { if (Process.HasExited) Process.WaitForExit(); } catch { } // 남은 출력(오류 원인)까지 받아 둔다.
             SaveLog();
         }
 

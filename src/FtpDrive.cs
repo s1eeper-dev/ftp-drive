@@ -13,7 +13,7 @@ using System.Windows.Forms;
 
 [assembly: AssemblyTitle("FTP 드라이브")]
 [assembly: AssemblyProduct("FTP 드라이브")]
-[assembly: AssemblyVersion("1.3.0.0")] // 버전은 여기 한 곳에서만 바꾼다. build.ps1 이 설치 프로그램에도 넘긴다.
+[assembly: AssemblyVersion("1.3.1.0")] // 버전은 여기 한 곳에서만 바꾼다. build.ps1 이 설치 프로그램에도 넘긴다.
 
 namespace FtpDrive
 {
