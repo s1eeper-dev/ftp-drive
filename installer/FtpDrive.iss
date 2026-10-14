@@ -1,6 +1,9 @@
 ﻿; FTP 드라이브 설치 마법사 스크립트. WinFsp 와 rclone 은 설치 중에 공식 배포처에서 내려받는다.
 #define AppName "FTP 드라이브"
-#define AppVersion "1.1.0"
+; 버전은 build.ps1 이 src/FtpDrive.cs 의 AssemblyVersion 을 읽어 /DAppVersion 으로 넘긴다.
+#ifndef AppVersion
+  #define AppVersion "0.0.0"
+#endif
 #define WinFspUrl "https://github.com/winfsp/winfsp/releases/download/v2.1/winfsp-2.1.25156.msi"
 #define RcloneUrl "https://downloads.rclone.org/rclone-current-windows-amd64.zip"
 
@@ -38,6 +41,8 @@ Name: "{autodesktop}\{#AppName}"; Filename: "{app}\FtpDrive.exe"; IconFilename: 
 
 [Run]
 Filename: "{app}\FtpDrive.exe"; Description: "{cm:LaunchProgram,{#AppName}}"; Flags: nowait postinstall skipifsilent
+; 프로그램 안에서 업데이트하면 /SILENT 로 설치되므로, 끝나면 사용자 권한으로 프로그램을 다시 연다.
+Filename: "{app}\FtpDrive.exe"; Flags: nowait runasoriginaluser skipifnotsilent
 
 [UninstallDelete]
 Type: files; Name: "{app}\rclone.exe"

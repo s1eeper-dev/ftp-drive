@@ -31,6 +31,11 @@ FTP, FTPS, SFTP 서버를 Windows 드라이브 문자(예: `Z:`)로 연결하고
 - 연결에 실패하면 원인 안내와 함께 `%APPDATA%\FtpDrive\rclone.log`에 기록이 남습니다.
 - 관리자 권한으로 실행하지 마세요. 탐색기에서 드라이브가 보이지 않을 수 있습니다.
 
+## 업데이트
+
+1.2.0부터는 프로그램이 켜질 때와 켜 둔 동안 30분마다 새 버전을 확인합니다. 새 버전이 있으면 창 오른쪽 아래에 노란 [새 버전 x.y.z] 버튼이 나타나고, 누른 뒤 [지금 업데이트]를 고르면 내려받아 설치한 다음 프로그램을 다시 엽니다.
+왼쪽 아래 '업데이트 확인'을 눌러 바로 확인할 수도 있습니다. 1.1.0 이하에서는 위 링크로 한 번 직접 설치해야 합니다.
+
 ## 제거
 
 [설정 > 앱]에서 'FTP 드라이브'를 제거합니다. WinFsp는 다른 프로그램도 쓸 수 있어 자동으로 지우지 않으니, 필요 없으면 같은 곳에서 따로 제거합니다.
@@ -43,4 +48,10 @@ Windows, .NET Framework 4.x(Windows 10/11 기본 탑재), [Inno Setup](https://j
 .\build.ps1
 ```
 
-`dist\FtpDrive-Setup.exe`가 만들어집니다.
+`dist\FtpDrive-Setup.exe`가 만들어집니다. 버전은 `src\FtpDrive.cs`의 `AssemblyVersion` 한 곳에서만 바꿉니다.
+
+새 버전 배포는 버전을 올려 빌드한 뒤 같은 이름의 설치 파일을 릴리스에 올리면 됩니다. 설치된 프로그램이 이 릴리스를 찾아 업데이트합니다.
+
+```powershell
+gh release create v1.2.0 dist\FtpDrive-Setup.exe --title "FTP 드라이브 1.2.0" --notes "바뀐 내용"
+```

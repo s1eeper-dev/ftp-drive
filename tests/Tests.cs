@@ -69,6 +69,36 @@ namespace FtpDrive
             Check(u != null && u.Pending == 0, "업로드가 없으면 0개");
             Check(UploadInfo.Parse("not json", null) == null, "JSON 이 아니면 null");
 
+            // GitHub 릴리스 목록에서 새 버전을 고른다.
+            const string releases = "[" +
+                "{\"tag_name\":\"v1.4.0\",\"draft\":true,\"prerelease\":false,\"published_at\":\"2026-10-20T00:00:00Z\",\"body\":\"초안\",\"assets\":[{\"name\":\"FtpDrive-Setup.exe\",\"size\":9,\"browser_download_url\":\"https://x/d\"}]}," +
+                "{\"tag_name\":\"v1.3.1\",\"draft\":false,\"prerelease\":true,\"published_at\":\"2026-10-19T00:00:00Z\",\"body\":\"시험판\",\"assets\":[{\"name\":\"FtpDrive-Setup.exe\",\"size\":9,\"browser_download_url\":\"https://x/p\"}]}," +
+                "{\"tag_name\":\"v1.3.0\",\"draft\":false,\"prerelease\":false,\"published_at\":\"2026-10-18T09:00:00Z\",\"body\":\"**새 기능**\\r\\n- 복수 연결\",\"assets\":[" +
+                    "{\"name\":\"other.zip\",\"size\":1,\"browser_download_url\":\"https://x/o\"}," +
+                    "{\"name\":\"FtpDrive-Setup.exe\",\"size\":2112859,\"digest\":\"sha256:ABCDEF\",\"browser_download_url\":\"https://x/130\"}]}," +
+                "{\"tag_name\":\"v1.2.5\",\"draft\":false,\"prerelease\":false,\"published_at\":\"2026-10-16T09:00:00Z\",\"body\":\"- 설치 파일 없는 릴리스\",\"assets\":[]}," +
+                "{\"tag_name\":\"v1.2.1\",\"draft\":false,\"prerelease\":false,\"published_at\":\"2026-10-15T09:00:00Z\",\"body\":\"- `오류` 수정\",\"assets\":[{\"name\":\"FtpDrive-Setup.exe\",\"size\":5,\"browser_download_url\":\"https://x/121\"}]}," +
+                "{\"tag_name\":\"v1.2.0\",\"draft\":false,\"prerelease\":false,\"published_at\":\"2026-10-14T09:00:00Z\",\"body\":\"- 지금 버전\",\"assets\":[{\"name\":\"FtpDrive-Setup.exe\",\"size\":5,\"browser_download_url\":\"https://x/120\"}]}" +
+                "]";
+            var up = Updater.Parse(releases, new Version(1, 2, 0, 0));
+            Check(up != null && up.VersionText == "1.3.0", "초안·시험판은 빼고 가장 새 정식 버전을 고른다");
+            Check(up != null && up.Url == "https://x/130" && up.Size == 2112859 && up.Sha256 == "abcdef" && up.Date == "2026-10-18",
+                "설치 파일 주소·크기·SHA-256·날짜를 읽는다");
+            Check(Updater.Parse(releases, new Version(1, 3, 0)) == null, "이미 최신이면 null (1.3 과 1.3.0.0 을 같게 본다)");
+            Check(Updater.Parse("[]", new Version(1, 0, 0)) == null, "릴리스가 없으면 null");
+            bool threw = false;
+            try { Updater.Parse("{\"message\":\"API rate limit exceeded\"}", new Version(1, 0, 0)); }
+            catch (FormatException) { threw = true; }
+            Check(threw, "목록이 아닌 응답(요청 한도 초과 등)은 오류로 알린다");
+
+            string file = TempFile();
+            File.WriteAllBytes(file, Encoding.ASCII.GetBytes("abc"));
+            var ok = new UpdateInfo { Size = 3, Sha256 = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad" };
+            Check(Updater.Verify(file, ok), "크기와 SHA-256 이 맞으면 통과");
+            ok.Sha256 = "00" + ok.Sha256.Substring(2);
+            Check(!Updater.Verify(file, ok), "SHA-256 이 다르면 거부");
+            Check(!Updater.Verify(file, new UpdateInfo { Size = 4 }), "크기가 다르면 거부");
+
             Console.WriteLine(failed == 0 ? "모두 통과" : failed + "개 실패");
             return failed == 0 ? 0 : 1;
         }

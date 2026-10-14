@@ -11,16 +11,19 @@ if (Test-Path $dist) { Remove-Item $dist -Recurse -Force }
 New-Item -ItemType Directory (Join-Path $dist 'build') | Out-Null
 
 $refs = '/r:System.Windows.Forms.dll', '/r:System.Drawing.dll', '/r:System.Web.Extensions.dll'
+$sources = "$root\src\FtpDrive.cs", "$root\src\Updater.cs"
+$version = [regex]::Match((Get-Content "$root\src\FtpDrive.cs" -Raw -Encoding UTF8), 'AssemblyVersion\("(\d+\.\d+\.\d+)').Groups[1].Value
+if (-not $version) { throw 'src\FtpDrive.cs 에서 AssemblyVersion 을 찾지 못했습니다.' }
 
-# 설정 로직 테스트를 먼저 돌리고, 실패하면 빌드를 멈춘다.
-& $csc /nologo /target:exe /codepage:65001 /main:FtpDrive.Tests /out:"$dist\build\Tests.exe" @refs "$root\src\FtpDrive.cs" "$root\tests\Tests.cs"
+# 설정·업데이트 로직 테스트를 먼저 돌리고, 실패하면 빌드를 멈춘다.
+& $csc /nologo /target:exe /codepage:65001 /main:FtpDrive.Tests /out:"$dist\build\Tests.exe" @refs @sources "$root\tests\Tests.cs"
 if ($LASTEXITCODE -ne 0) { throw "테스트 컴파일 실패 (종료 코드 $LASTEXITCODE)" }
 & "$dist\build\Tests.exe"
 if ($LASTEXITCODE -ne 0) { throw '테스트 실패' }
 
-& $csc /nologo /target:winexe /codepage:65001 /optimize+ /out:"$dist\build\FtpDrive.exe" @refs "$root\src\FtpDrive.cs"
+& $csc /nologo /target:winexe /codepage:65001 /optimize+ /out:"$dist\build\FtpDrive.exe" @refs @sources
 if ($LASTEXITCODE -ne 0) { throw "컴파일 실패 (종료 코드 $LASTEXITCODE)" }
 
-& $iscc /Q "$root\installer\FtpDrive.iss"
+& $iscc /Q "/DAppVersion=$version" "$root\installer\FtpDrive.iss"
 if ($LASTEXITCODE -ne 0) { throw "설치 파일 생성 실패 (종료 코드 $LASTEXITCODE)" }
-Get-Item "$dist\FtpDrive-Setup.exe" | Select-Object FullName, Length
+Get-Item "$dist\FtpDrive-Setup.exe" | Select-Object FullName, Length, @{ n = 'Version'; e = { $version } }

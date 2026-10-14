@@ -18,7 +18,7 @@ using Microsoft.Win32;
 
 [assembly: AssemblyTitle("FTP 드라이브")]
 [assembly: AssemblyProduct("FTP 드라이브")]
-[assembly: AssemblyVersion("1.1.0.0")]
+[assembly: AssemblyVersion("1.2.0.0")] // 버전은 여기 한 곳에서만 바꾼다. build.ps1 이 설치 프로그램에도 넘긴다.
 
 namespace FtpDrive
 {
@@ -229,8 +229,15 @@ namespace FtpDrive
         readonly Button btnDisconnect = new Button();
         readonly Button btnOpen = new Button();
         readonly Label lblStatus = new Label();
+        readonly LinkLabel lnkVersion = new LinkLabel();
+        readonly Button btnUpdate = new Button();
+        readonly ToolTip tips = new ToolTip();
         readonly System.Windows.Forms.Timer waitTimer = new System.Windows.Forms.Timer();   // 연결될 때까지 확인
         readonly System.Windows.Forms.Timer statsTimer = new System.Windows.Forms.Timer();  // 연결 중 업로드 상황 확인
+        readonly System.Windows.Forms.Timer updateTimer = new System.Windows.Forms.Timer(); // 시작 2초 뒤, 그다음 30분마다 새 버전 확인
+        UpdateInfo update;         // 찾아 둔 새 버전, 없으면 null
+        bool checkingUpdate;
+        bool updating;             // 업데이트 설치를 시작해 창을 닫는 중
         readonly Queue<string> logLines = new Queue<string>();
 
         readonly Settings settings = Settings.Load();
@@ -326,8 +333,34 @@ namespace FtpDrive
             grid.SetColumnSpan(lblStatus, 2);
             grid.RowCount++;
 
+            // 맨 아래 줄: 왼쪽은 지금 버전과 [업데이트 확인], 오른쪽은 새 버전이 있을 때만 보이는 노란 버튼.
+            var footer = new TableLayoutPanel { ColumnCount = 2, RowCount = 1, Anchor = AnchorStyles.Left | AnchorStyles.Right, Margin = new Padding(0, Em(0.3), 0, 0) };
+            footer.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+            footer.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+            lnkVersion.AutoSize = true;
+            lnkVersion.Anchor = AnchorStyles.Left;
+            lnkVersion.LinkColor = SystemColors.GrayText;
+            lnkVersion.Text = "버전 " + Updater.Text(Updater.Current) + " · 업데이트 확인";
+            btnUpdate.AutoSize = true;
+            btnUpdate.Anchor = AnchorStyles.Right;
+            btnUpdate.Margin = Padding.Empty;
+            btnUpdate.FlatStyle = FlatStyle.Flat;
+            btnUpdate.BackColor = Color.FromArgb(255, 205, 64);
+            btnUpdate.FlatAppearance.BorderColor = Color.FromArgb(214, 160, 0);
+            btnUpdate.Visible = false;
+            tips.SetToolTip(btnUpdate, "누르면 바뀐 내용을 보고 업데이트할 수 있습니다.");
+            footer.Controls.Add(lnkVersion, 0, 0);
+            footer.Controls.Add(btnUpdate, 1, 0);
+            grid.Controls.Add(footer, 0, grid.RowCount);
+            grid.SetColumnSpan(footer, 2);
+            grid.RowCount++;
+
             Controls.Add(grid);
             AcceptButton = btnConnect;
+            // 버튼이 나타나고 사라져도 창 높이가 바뀌지 않게 맨 아래 줄 높이를 버튼에 맞춰 고정한다.
+            btnUpdate.Text = "새 버전 0.0.0";
+            footer.Height = btnUpdate.PreferredSize.Height;
+            footer.MinimumSize = new Size(0, footer.Height);
             // 목록 줄 전체 너비를 아래 입력 칸과 맞춘다. 버튼 글꼴이 정해지도록 폼에 붙인 뒤 계산한다.
             cboProfiles.Width = field - btnNew.PreferredSize.Width - btnNew.Margin.Left - btnDelete.PreferredSize.Width - btnDelete.Margin.Left;
 
@@ -343,6 +376,14 @@ namespace FtpDrive
             waitTimer.Tick += delegate { OnWaitTick(); };
             statsTimer.Interval = 1000;
             statsTimer.Tick += delegate { OnStatsTick(); };
+            updateTimer.Interval = 2000;
+            updateTimer.Tick += delegate
+            {
+                updateTimer.Interval = 30 * 60 * 1000;
+                CheckForUpdate(false);
+            };
+            lnkVersion.LinkClicked += delegate { CheckForUpdate(true); };
+            btnUpdate.Click += delegate { OpenUpdate(); };
 
             chkOpen.Checked = settings.OpenAfterConnect;
             FillProfiles(settings.Profiles.Count > 0 ? settings.Profiles[0] : null);
@@ -369,6 +410,60 @@ namespace FtpDrive
             base.OnShown(e);
             if (selected != null) txtPass.Focus();
             else txtAlias.Focus();
+            updateTimer.Start();
+        }
+
+        // 새 버전을 확인한다. manual 이면 결과를 알려 주고, 새 버전이 있으면 바로 업데이트 창을 연다.
+        void CheckForUpdate(bool manual)
+        {
+            if (checkingUpdate) return;
+            checkingUpdate = true;
+            string cur = "버전 " + Updater.Text(Updater.Current) + " · ";
+            if (manual) lnkVersion.Text = cur + "확인 중...";
+            Updater.CheckAsync((info, error) =>
+            {
+                checkingUpdate = false;
+                if (IsDisposed) return;
+                if (error == null) update = info; // 확인하지 못했으면 찾아 둔 새 버전은 그대로 둔다.
+                btnUpdate.Visible = update != null;
+                if (update != null) btnUpdate.Text = "새 버전 " + update.VersionText;
+                lnkVersion.Text = cur + (!manual ? "업데이트 확인" : error != null ? "확인 실패" : update == null ? "최신 버전입니다" : "새 버전이 있습니다");
+                if (!manual) return;
+                if (error != null) Warn(error);
+                else if (update != null) OpenUpdate();
+            });
+        }
+
+        void OpenUpdate()
+        {
+            if (update == null) return;
+            using (var dlg = new UpdateForm(update, Font, PrepareForUpdate))
+            {
+                if (dlg.ShowDialog(this) != DialogResult.OK) return;
+                try
+                {
+                    // 조용히 설치하고, 설치 프로그램이 끝나면 FTP 드라이브를 다시 연다 (FtpDrive.iss 의 [Run]).
+                    Process.Start(new ProcessStartInfo(dlg.SetupPath, "/SILENT /SUPPRESSMSGBOXES /NORESTART") { UseShellExecute = true });
+                }
+                catch (Exception ex)
+                {
+                    Warn("업데이트를 시작하지 못했습니다. 관리자 권한 확인 창에서 [아니요]를 눌렀다면 다시 시도하세요.\n\n" + ex.Message);
+                    return;
+                }
+            }
+            updating = true;
+            Close();
+        }
+
+        // 설치하는 동안 프로그램이 닫히므로 연결부터 해제한다. 해제하지 못하면 false.
+        bool PrepareForUpdate()
+        {
+            if (rclone == null) return true;
+            asking = true;
+            bool yes = MessageBox.Show(this, "업데이트하려면 연결을 해제해야 합니다. 지금 해제할까요?", Text,
+                MessageBoxButtons.YesNo, MessageBoxIcon.Question) == DialogResult.Yes;
+            asking = false;
+            return yes && Disconnect(true);
         }
 
         // 목록을 다시 채우고 sel 을 고른다. sel 이 null 이면 빈 새 연결 입력 상태로 둔다.
@@ -715,7 +810,7 @@ namespace FtpDrive
         {
             if (rclone != null)
             {
-                if (e.CloseReason == CloseReason.UserClosing)
+                if (e.CloseReason == CloseReason.UserClosing && !updating)
                 {
                     asking = true;
                     bool yes = MessageBox.Show(this, "연결을 해제하고 종료할까요?", Text, MessageBoxButtons.YesNo, MessageBoxIcon.Question) == DialogResult.Yes;
