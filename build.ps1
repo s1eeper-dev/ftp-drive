@@ -11,7 +11,7 @@ if (Test-Path $dist) { Remove-Item $dist -Recurse -Force }
 New-Item -ItemType Directory (Join-Path $dist 'build') | Out-Null
 
 $refs = '/r:System.Windows.Forms.dll', '/r:System.Drawing.dll', '/r:System.Web.Extensions.dll'
-$sources = "$root\src\FtpDrive.cs", "$root\src\Updater.cs"
+$sources = "$root\src\FtpDrive.cs", "$root\src\MainForm.cs", "$root\src\Connection.cs", "$root\src\Updater.cs"
 $version = [regex]::Match((Get-Content "$root\src\FtpDrive.cs" -Raw -Encoding UTF8), 'AssemblyVersion\("(\d+\.\d+\.\d+)').Groups[1].Value
 if (-not $version) { throw 'src\FtpDrive.cs 에서 AssemblyVersion 을 찾지 못했습니다.' }
 

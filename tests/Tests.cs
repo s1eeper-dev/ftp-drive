@@ -40,10 +40,13 @@ namespace FtpDrive
             var orig = new Settings { OpenAfterConnect = false };
             orig.Profiles.Add(new Profile { Alias = "회사 NAS", Protocol = "ftps-explicit", Host = "nas.local", Port = 21, User = "kim", RemotePath = "", Drive = "X" });
             orig.Profiles.Add(new Profile { Alias = "집", Protocol = "ftp", Host = "1.2.3.4", Port = 2121, User = "me", RemotePath = "/공유", Drive = "Z" });
+            orig.Profiles.Add(new Profile { Alias = "NAS_DEV", Protocol = "webdav-https", Host = "nas.example.com", Port = 5006, User = "kim", Drive = "W", SkipCertCheck = true });
             string path = TempFile();
             orig.Save(path);
             s = Settings.Load(path);
-            Check(s.Profiles.Count == 2 && s.Profiles[0].Alias == "회사 NAS" && s.Profiles[1].Alias == "집", "저장 후 순서가 유지된다");
+            Check(s.Profiles.Count == 3 && s.Profiles[0].Alias == "회사 NAS" && s.Profiles[1].Alias == "집" && s.Profiles[2].Alias == "NAS_DEV", "저장 후 순서가 유지된다");
+            Check(s.Profiles[2].Protocol == "webdav-https" && s.Profiles[2].Port == 5006 && s.Profiles[2].SkipCertCheck && !s.Profiles[0].SkipCertCheck,
+                "WebDAV 방식과 '인증서 확인 안 함'이 저장된다");
             Check(s.Profiles[0].Protocol == "ftps-explicit" && s.Profiles[0].Drive == "X" && s.Profiles[1].Port == 2121 && s.Profiles[1].RemotePath == "/공유",
                 "저장 후 값이 유지된다");
             Check(!s.OpenAfterConnect, "저장 후 탐색기 열기 설정이 유지된다");
@@ -52,6 +55,17 @@ namespace FtpDrive
             // 같은 별칭 구역이 두 번 있으면 첫 번째만 쓴다.
             s = Settings.Load(TempFile("[Profile:A]", "Host=h1", "[Profile:A]", "Host=h2"));
             Check(s.Profiles.Count == 1 && s.Profiles[0].Host == "h1", "중복 별칭은 첫 번째만 남는다");
+
+            Check(Profile.Keys.Length == Profile.Names.Length && Profile.Keys.Length == Profile.Ports.Length, "방식 목록 길이가 맞는다");
+            Check(Profile.UsesTls("webdav-https") && Profile.UsesTls("ftps-explicit") && !Profile.UsesTls("webdav-http") && !Profile.UsesTls("sftp"),
+                "인증서 옵션은 TLS 를 쓰는 방식에만");
+
+            // rclone 실패 로그를 알기 쉬운 문구로 바꾼다.
+            Check(Connection.Hint("ERROR : webdav root '': error listing: 401 Unauthorized").StartsWith("아이디 또는 비밀번호"), "WebDAV 401 은 비밀번호 오류");
+            Check(Connection.Hint("Failed to create file system: tls: failed to verify certificate: x509: certificate signed by unknown authority").Contains("인증서 확인 안 함"),
+                "자체 서명 인증서 오류는 '인증서 확인 안 함' 안내");
+            Check(Connection.Hint("NewFs: failed to make FTP connection: 530 Login incorrect.").StartsWith("아이디 또는 비밀번호"), "FTP 530 은 비밀번호 오류");
+            Check(Connection.Hint("2026/10/14 15:30:12 NOTICE: Serving remote control") == null, "평범한 로그는 안내 없음");
 
             Check(Profile.CleanAlias(" [회사]/NAS:*?\"<>|\\ ") == "회사NAS", "별칭에서 쓸 수 없는 문자를 뺀다");
             Check(Profile.CleanAlias(new string('가', 50)).Length == 40, "별칭은 40자까지만 쓴다");
