@@ -1,6 +1,6 @@
 ﻿; FTP 드라이브 설치 마법사 스크립트. WinFsp 와 rclone 은 설치 중에 공식 배포처에서 내려받는다.
 #define AppName "FTP 드라이브"
-#define AppVersion "1.0.0"
+#define AppVersion "1.1.0"
 #define WinFspUrl "https://github.com/winfsp/winfsp/releases/download/v2.1/winfsp-2.1.25156.msi"
 #define RcloneUrl "https://downloads.rclone.org/rclone-current-windows-amd64.zip"
 

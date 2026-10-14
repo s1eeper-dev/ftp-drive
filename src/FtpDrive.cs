@@ -18,7 +18,7 @@ using Microsoft.Win32;
 
 [assembly: AssemblyTitle("FTP 드라이브")]
 [assembly: AssemblyProduct("FTP 드라이브")]
-[assembly: AssemblyVersion("1.0.0.0")]
+[assembly: AssemblyVersion("1.1.0.0")]
 
 namespace FtpDrive
 {
